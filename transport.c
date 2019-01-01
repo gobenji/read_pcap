@@ -7,6 +7,7 @@
 #include <sys/time.h>
 
 #include "transport.h"
+#include "link.h"
 #include "lookup3.h"
 
 #define USEC_PER_SEC	1000000L
@@ -212,6 +213,7 @@ static gboolean flow_id_equal(gconstpointer a, gconstpointer b)
 
 struct tcpv4_priv {
 	GHashTable *sockets;
+	struct proto *payload_proto;
 };
 
 static void tcp_update(struct tcpv4_priv *priv, struct pc_buff *pcb)
@@ -329,6 +331,8 @@ static void tcpv4_parse(struct proto *proto, struct pc_buff *pcb)
 	pcb_pull(pcb, hdrlen);
 	if (do_update) {
 		tcp_update(tcpv4_priv, pcb);
+		tcpv4_priv->payload_proto->ops->parse_packet(
+			tcpv4_priv->payload_proto, pcb);
 	}
 }
 
@@ -337,6 +341,7 @@ static void tcpv4_destroy(struct proto* proto)
 	struct tcpv4_priv *tcpv4_priv = proto->priv;
 	struct stats *stats = proto->node->data;
 
+	tcpv4_priv->payload_proto->ops->destroy(tcpv4_priv->payload_proto);
 	if (g_hash_table_size(tcpv4_priv->sockets)) {
 		/* in expectation that a list of Connection info will follow */
 		printf("\n");
@@ -366,6 +371,9 @@ struct proto *register_tcpv4_proto(GNode *parent)
 
 	tcpv4_priv->sockets = g_hash_table_new_full(
 		&flow_id_hash, &flow_id_equal, NULL, &destroy_sk);
+	tcpv4_priv->payload_proto = register_unknown_proto(proto->node);
+	((struct stats *)(tcpv4_priv->payload_proto->node->data))->name =
+		"payload";
 	proto->priv = tcpv4_priv;
 
 	return proto;

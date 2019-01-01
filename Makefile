@@ -14,7 +14,7 @@ link.o: link.c link.h net.h
 
 net.o: net.c net.h link.h transport.h
 
-transport.o: transport.c transport.h lookup3.h
+transport.o: transport.c transport.h link.h lookup3.h
 
 .PHONY: clean
 clean:

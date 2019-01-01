@@ -97,7 +97,7 @@ struct proto *register_ipv4_proto(GNode *parent)
 	}
 	ipv4_priv->protocols = protocols;
 	ipv4_priv->unknown_proto = register_unknown_proto(proto->node);
-	proto->priv = ipv4_priv;;
+	proto->priv = ipv4_priv;
 
 	return proto;
 }
