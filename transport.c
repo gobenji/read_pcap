@@ -130,11 +130,11 @@ static void sk_sndq_drain(struct sk *sk, bool do_sibling)
 	unsigned long rtt_avg = 0;
 
 	g_queue_foreach(&sk->sndq, &seg_info, &info);
-
 	if (info.rtt_nb) {
 		rtt_avg = (info.rtt_sum.tv_sec * USEC_PER_SEC +
 			   info.rtt_sum.tv_usec) / info.rtt_nb;
 	}
+
 	if (rtt_avg || info.data_len) {
 		struct {
 			struct in_addr *addr;
@@ -147,7 +147,6 @@ static void sk_sndq_drain(struct sk *sk, bool do_sibling)
 				.addr = &sk->flow_id.dst_addr,
 			},
 		};
-		ldiv_t rtt_usec = ldiv(rtt_avg, USEC_PER_SEC);
 		unsigned int i;
 
 		for (i = 0; i < ARRAY_SIZE(addrs); i++) {
@@ -158,15 +157,21 @@ static void sk_sndq_drain(struct sk *sk, bool do_sibling)
 			}
 		}
 
-		printf("Connection %s:%u > %s:%u: avgrtt %lu.%06lu (%u sample%s) len %lu\n",
+		printf("Connection %s:%u > %s:%u:\n",
 		       addrs[0].addr_buf, ntohs(sk->flow_id.src_port),
-		       addrs[1].addr_buf, ntohs(sk->flow_id.dst_port),
+		       addrs[1].addr_buf, ntohs(sk->flow_id.dst_port));
+	}
+	if (rtt_avg) {
+		ldiv_t rtt_usec = ldiv(rtt_avg, USEC_PER_SEC);
+
+		printf("    avgrtt %lu.%06lu (%u sample%s)\n",
 		       rtt_usec.quot, rtt_usec.rem, info.rtt_nb,
-		       info.rtt_nb > 1 ? "s" : "", info.data_len);
+		       info.rtt_nb > 1 ? "s" : "");
 	}
 	if (info.data_len) {
 		uint32_t offset = 0;
 
+		printf("    captured payload data, len %lu\n", info.data_len);
 		g_queue_foreach(&sk->sndq, &seg_print, &offset);
 	}
 
