@@ -2,4 +2,7 @@
 *.o
 .*.swp
 
+tags
+cscope.*
+
 /read_pcap
