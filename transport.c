@@ -11,6 +11,7 @@
 #include "lookup3.h"
 
 #define USEC_PER_SEC	1000000L
+#define ARRAY_SIZE(arr) (sizeof(arr) / sizeof((arr)[0]))
 
 /* from include/net/tcp.h */
 static inline bool before(uint32_t seq1, uint32_t seq2)
@@ -125,7 +126,6 @@ static void seg_free(gpointer data, gpointer user_data)
 
 static void sk_sndq_drain(struct sk *sk, bool do_sibling)
 {
-	char addr_buf[INET_ADDRSTRLEN];
 	struct conn_info info = {0};
 	unsigned long rtt_avg = 0;
 
@@ -136,18 +136,30 @@ static void sk_sndq_drain(struct sk *sk, bool do_sibling)
 			   info.rtt_sum.tv_usec) / info.rtt_nb;
 	}
 	if (rtt_avg || info.data_len) {
-		if (inet_ntop(AF_INET, &sk->flow_id.src_addr, addr_buf,
-			      sizeof(addr_buf)) == NULL) {
-			pr_perror("inet_ntop");
-		}
-		printf("Connection %s:%u > ", addr_buf, ntohs(sk->flow_id.src_port));
+		struct {
+			struct in_addr *addr;
+			char addr_buf[INET_ADDRSTRLEN];
+		} addrs[] = {
+			{
+				.addr = &sk->flow_id.src_addr,
+			},
+			{
+				.addr = &sk->flow_id.dst_addr,
+			},
+		};
+		unsigned int i;
 
-		if (inet_ntop(AF_INET, &sk->flow_id.dst_addr, addr_buf,
-			      sizeof(addr_buf)) == NULL) {
-			pr_perror("inet_ntop");
+		for (i = 0; i < ARRAY_SIZE(addrs); i++) {
+			if (inet_ntop(AF_INET, addrs[i].addr,
+				      addrs[i].addr_buf,
+				      sizeof(addrs[i].addr_buf)) == NULL) {
+				pr_perror("inet_ntop");
+			}
 		}
-		printf("%s:%u: avgrtt %lu.%06lu (%u sample%s) len %lu\n",
-		       addr_buf, ntohs(sk->flow_id.dst_port),
+
+		printf("Connection %s:%u > %s:%u: avgrtt %lu.%06lu (%u sample%s) len %lu\n",
+		       addrs[0].addr_buf, ntohs(sk->flow_id.src_port),
+		       addrs[1].addr_buf, ntohs(sk->flow_id.dst_port),
 		       rtt_avg / USEC_PER_SEC, rtt_avg % USEC_PER_SEC,
 		       info.rtt_nb, info.rtt_nb > 1 ? "s" : "",
 		       info.data_len);
