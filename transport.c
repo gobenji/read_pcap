@@ -108,7 +108,7 @@ static void seg_print(gpointer data, gpointer user_data)
 			printf(" %02hhx", *byte);
 		}
 		printf("\n");
-		*offset += 16;
+		*offset += byte - line_start;
 	}
 }
 
