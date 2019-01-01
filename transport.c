@@ -82,6 +82,37 @@ static void seg_info(gpointer data, gpointer user_data)
 }
 
 /* data: a GQueue element of type struct segment *
+ * user_data: offset from byte stream start, type uint32_t *
+ */
+static void seg_print(gpointer data, gpointer user_data)
+{
+	uint32_t *offset = user_data;
+	struct segment *seg = data;
+	char *byte = seg->data;
+	char *end;
+
+	if (!seg->data_len) {
+		return;
+	}
+
+	end = byte + seg->data_len;
+	while (byte < end) {
+		char *line_start = byte;
+
+		printf("    %08X ", *offset);
+		for (; byte < end && byte - line_start < 8; byte++) {
+			printf(" %02hhx", *byte);
+		}
+		printf(" ");
+		for (; byte < end && byte - line_start < 16; byte++) {
+			printf(" %02hhx", *byte);
+		}
+		printf("\n");
+		*offset += 16;
+	}
+}
+
+/* data: a GQueue element of type struct segment *
  * user_data: unused
  */
 static void seg_free(gpointer data, gpointer user_data)
@@ -120,6 +151,11 @@ static void sk_sndq_drain(struct sk *sk, bool do_sibling)
 		       rtt_avg / USEC_PER_SEC, rtt_avg % USEC_PER_SEC,
 		       info.rtt_nb, info.rtt_nb > 1 ? "s" : "",
 		       info.data_len);
+	}
+	if (info.data_len) {
+		uint32_t offset = 0;
+
+		g_queue_foreach(&sk->sndq, &seg_print, &offset);
 	}
 
 	g_queue_foreach(&sk->sndq, &seg_free, NULL);
