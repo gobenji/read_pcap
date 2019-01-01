@@ -16,14 +16,14 @@
 #define DIV_ROUND_UP(n, d) (((n) + (d) - 1) / (d))
 
 /* from include/net/tcp.h */
-static inline bool before(uint32_t seq1, uint32_t seq2)
+static bool before(uint32_t seq1, uint32_t seq2)
 {
         return (int32_t)(seq1 - seq2) < 0;
 }
 #define after(seq2, seq1) 	before(seq1, seq2)
 
 /* is s2<=s1<=s3 ? */
-static inline bool between(uint32_t seq1, uint32_t seq2, uint32_t seq3)
+static bool between(uint32_t seq1, uint32_t seq2, uint32_t seq3)
 {
 	return seq3 - seq2 >= seq1 - seq2;
 }
@@ -320,7 +320,7 @@ static void sk_q_record_ack(struct sk *sk, uint32_t from, uint32_t to,
 
 		next = e->next;
 
-		if (between(seg->seq, from, to) && between(end_seq, from, to)) {
+		if (between(end_seq, from, to)) {
 			timersub(tstamp, &seg->ts, &seg->ts);
 			g_queue_unlink(&sk->unacked_q, e);
 			g_queue_push_tail_link(&sk->acked_q, e);
