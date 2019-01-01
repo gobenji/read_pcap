@@ -9,12 +9,20 @@
 
 extern bool verbose;
 
+#define pr_perror(fmt, ...)                                                    \
+{                                                                              \
+	fprintf(stderr, "%s:%d: " fmt " : %m\n",                               \
+		__func__, __LINE__, ##__VA_ARGS__);                            \
+}
+
 /* sk_buff's little cousin ;) */
 struct pc_buff {
 	const void *head, *data;
 	size_t len;
 
 	const void *network_header, *transport_header;
+
+	const struct timeval *tstamp;
 };
 
 static inline const void *pcb_pull(struct pc_buff *pcb, unsigned int len)

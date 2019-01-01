@@ -8,14 +8,15 @@ all: read_pcap
 
 read_pcap: read_pcap.o link.o net.o transport.o
 
-read_pcap.o: read_pcap.c read_pcap.h
+read_pcap.o: read_pcap.c read_pcap.h link.h
 
-link.o: link.c link.h
+link.o: link.c link.h net.h
 
-net.o: net.c net.h
+net.o: net.c net.h link.h transport.h
 
-transport.o: transport.c transport.h
+transport.o: transport.c transport.h lookup3.h
 
 .PHONY: clean
 clean:
 	rm -f read_pcap
+	rm -f read_pcap.o link.o net.o transport.o

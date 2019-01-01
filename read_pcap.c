@@ -6,13 +6,6 @@
 #include "link.h"
 
 
-#define pr_perror(fmt, ...)                                                    \
-{                                                                              \
-	fprintf(stderr, "%s:%d: " fmt " : %m\n",                               \
-		__func__, __LINE__, ##__VA_ARGS__); 1;                         \
-}
-
-
 bool verbose = false;
 
 struct context {
@@ -30,16 +23,21 @@ static void parse_packet(u_char *_context, const struct pcap_pkthdr *h,
 		.head = bytes,
 		.data = bytes,
 		.len = h->caplen,
+		.tstamp = &h->ts,
 	};
 
 	context->stats.packets++;
 	context->stats.bytes += h->len;
 
 	if (verbose) {
-		printf("got one frame with %u/%u bytes\n", h->caplen, h->len);
+		printf("frame %-6lu ", context->stats.packets);
 	}
 
 	context->ether_proto->ops->parse_packet(context->ether_proto, &pcb);
+
+	if (verbose) {
+		printf(", length %u/%u\n", h->caplen, h->len);
+	}
 }
 
 /*
@@ -144,7 +142,7 @@ int main(int argc, char **argv)
 
 	retval = pcap_datalink(p);
 	if (verbose) {
-		printf("linktype: %d\n", retval);
+		printf("%s linktype: %d\n", fname, retval);
 	}
 	if (retval != DLT_EN10MB) {
 		fprintf(stderr, "Unhandled link type %d\n", retval);
@@ -164,6 +162,10 @@ int main(int argc, char **argv)
 		goto out_destroy;
 	}
 
+	if (verbose && context.stats.packets) {
+		/* for a nicer output, separate from the list of frames */
+		printf("\n");
+	}
 	printf("Protocol hierarchy\n");
 	printf("%-32s  %8s           %8s         \n", "protocol", "packets",
 	       "bytes");
