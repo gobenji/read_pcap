@@ -78,7 +78,7 @@ static void print_hierarchy(struct context *context)
 
 void print_usage(FILE *stream, char *name)
 {
-	fprintf(stream, "Usage: [options] %s <capture file>\n", name);
+	fprintf(stream, "Usage: %s [options] <capture file>\n", name);
 	fprintf(stream, "\n");
 	fprintf(stream, "options:\n");
 	fprintf(stream, "-v, --verbose  Print debugging messages.\n");
