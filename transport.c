@@ -58,14 +58,15 @@ static void init_sk(struct sk *sk)
 struct conn_info {
 	struct timeval rtt_sum;
 	unsigned int rtt_nb;
+	uint64_t data_len;
 };
 
-/* Accumulate segment's rtt if possible and free its memory
+/* Accumulate info about segment
  *
  * data: a GQueue element of type struct segment *
  * user_data: has type struct conn_info *
  */
-static void seg_acc_free(gpointer data, gpointer user_data)
+static void seg_info(gpointer data, gpointer user_data)
 {
 	struct segment *seg = data;
 	struct conn_info *info = user_data;
@@ -77,6 +78,15 @@ static void seg_acc_free(gpointer data, gpointer user_data)
 		timeradd(&info->rtt_sum, &rtt, &info->rtt_sum);
 		info->rtt_nb++;
 	}
+	info->data_len += seg->data_len;
+}
+
+/* data: a GQueue element of type struct segment *
+ * user_data: unused
+ */
+static void seg_free(gpointer data, gpointer user_data)
+{
+	struct segment *seg = data;
 
 	free(seg->data);
 	free(seg);
@@ -86,15 +96,15 @@ static void sk_sndq_drain(struct sk *sk, bool do_sibling)
 {
 	char addr_buf[INET_ADDRSTRLEN];
 	struct conn_info info = {0};
+	unsigned long rtt_avg = 0;
 
-	g_queue_foreach(&sk->sndq, &seg_acc_free, &info);
-	g_queue_clear(&sk->sndq);
+	g_queue_foreach(&sk->sndq, &seg_info, &info);
 
 	if (info.rtt_nb) {
-		unsigned long rtt_avg;
-
 		rtt_avg = (info.rtt_sum.tv_sec * USEC_PER_SEC +
 			   info.rtt_sum.tv_usec) / info.rtt_nb;
+	}
+	if (rtt_avg || info.data_len) {
 		if (inet_ntop(AF_INET, &sk->flow_id.src_addr, addr_buf,
 			      sizeof(addr_buf)) == NULL) {
 			pr_perror("inet_ntop");
@@ -105,11 +115,15 @@ static void sk_sndq_drain(struct sk *sk, bool do_sibling)
 			      sizeof(addr_buf)) == NULL) {
 			pr_perror("inet_ntop");
 		}
-		printf("%s:%u: avgrtt %lu.%06lu (%u sample%s)\n", addr_buf,
-		       ntohs(sk->flow_id.dst_port), rtt_avg / USEC_PER_SEC,
-		       rtt_avg % USEC_PER_SEC, info.rtt_nb,
-		       info.rtt_nb > 1 ? "s" : "");
+		printf("%s:%u: avgrtt %lu.%06lu (%u sample%s) len %lu\n",
+		       addr_buf, ntohs(sk->flow_id.dst_port),
+		       rtt_avg / USEC_PER_SEC, rtt_avg % USEC_PER_SEC,
+		       info.rtt_nb, info.rtt_nb > 1 ? "s" : "",
+		       info.data_len);
 	}
+
+	g_queue_foreach(&sk->sndq, &seg_free, NULL);
+	g_queue_clear(&sk->sndq);
 
 	/* For a nicer output, drain the sibling right after */
 	if (do_sibling && sk->sibling &&
@@ -227,7 +241,7 @@ static void tcp_update(struct tcpv4_priv *priv, struct pc_buff *pcb)
 		.src_port = tcph->source,
 	};
 	struct sk *dst_sk, *src_sk;
-	uint32_t seq, next_seq;
+	uint32_t seq, next_seq, data_len;
 
 	if (verbose) {
 		char addr_buf[INET_ADDRSTRLEN];
@@ -277,7 +291,8 @@ static void tcp_update(struct tcpv4_priv *priv, struct pc_buff *pcb)
 		sk_sndq_drain(src_sk, false);
 	}
 
-	next_seq = seq + pcb->len + tcph->syn + tcph->fin;
+	data_len = ntohs(iph->tot_len) - (pcb->data - pcb->network_header);
+	next_seq = seq + data_len + tcph->syn + tcph->fin;
 	if (after(next_seq, src_sk->snd_nxt)) {
 		struct segment *seg = malloc(sizeof(*seg));
 
@@ -288,11 +303,13 @@ static void tcp_update(struct tcpv4_priv *priv, struct pc_buff *pcb)
 		memcpy(&seg->ts_tx, pcb->tstamp, sizeof(seg->ts_tx));
 		seg->acked = false;
 		if (pcb->len) {
-			seg->data = malloc(pcb->len);
-			seg->data_len = pcb->len;
-			memcpy(seg->data, pcb->data, pcb->len);
+			data_len = MIN(data_len, pcb->len);
+			seg->data = malloc(data_len);
+			seg->data_len = data_len;
+			memcpy(seg->data, pcb->data, data_len);
 		} else {
 			seg->data = NULL;
+			seg->data_len = 0;
 		}
 		g_queue_push_tail(&src_sk->sndq, seg);
 	}

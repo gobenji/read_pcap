@@ -8,13 +8,15 @@ all: read_pcap
 
 read_pcap: read_pcap.o link.o net.o transport.o
 
-read_pcap.o: read_pcap.c read_pcap.h link.h
+HEADERS=read_pcap.h link.h net.h transport.h lookup3.h
 
-link.o: link.c link.h net.h
+read_pcap.o: read_pcap.c $(HEADERS)
 
-net.o: net.c net.h link.h transport.h
+link.o: link.c $(HEADERS)
 
-transport.o: transport.c transport.h link.h lookup3.h
+net.o: net.c $(HEADERS)
+
+transport.o: transport.c $(HEADERS)
 
 .PHONY: clean
 clean:
