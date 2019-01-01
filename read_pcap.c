@@ -104,6 +104,8 @@ void print_usage(FILE *stream, char *name)
 	fprintf(stream, "-h, --help     Show this help message and exit.\n");
 }
 
+struct timeval tv_zero;
+
 int main(int argc, char **argv)
 {
 	struct context context = {
@@ -153,6 +155,8 @@ int main(int argc, char **argv)
 		print_usage(stderr, argv[0]);
 		return 1;
 	}
+
+	timerclear(&tv_zero);
 
 	/* read capture file */
 	if ((p = pcap_open_offline(fname, errbuf)) == NULL) {

@@ -6,6 +6,7 @@
 #include <pcap/pcap.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <sys/time.h>
 
 
 extern bool verbose;
@@ -57,5 +58,7 @@ struct proto {
 	/* proto-specific private data */
 	void *priv;
 };
+
+extern struct timeval tv_zero;
 
 #endif /* _READ_PCAP_H */

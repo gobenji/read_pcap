@@ -1,7 +1,9 @@
 CFLAGS+= -Wall -g
 CFLAGS+= $(shell pkg-config --cflags glib-2.0)
+CFLAGS+= $(shell pkg-config --cflags libbsd-overlay)
 LDFLAGS+= -lpcap
 LDFLAGS+= $(shell pkg-config --libs glib-2.0)
+LDFLAGS+= $(shell pkg-config --libs libbsd-overlay)
 
 .PHONY: all
 all: read_pcap

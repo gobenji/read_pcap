@@ -5,6 +5,7 @@
 #include <netinet/ip.h>
 #include <sys/socket.h>
 #include <sys/time.h>
+#include <sys/tree.h>
 
 #include "transport.h"
 #include "link.h"
@@ -12,6 +13,7 @@
 
 #define USEC_PER_SEC	1000000L
 #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof((arr)[0]))
+#define DIV_ROUND_UP(n, d) (((n) + (d) - 1) / (d))
 
 /* from include/net/tcp.h */
 static inline bool before(uint32_t seq1, uint32_t seq2)
@@ -28,7 +30,7 @@ static inline bool between(uint32_t seq1, uint32_t seq2, uint32_t seq3)
 
 struct segment {
 	uint32_t seq, len;
-	struct timeval ts_tx, ts_ack;
+	struct timeval ts_tx, ts_ack, rtt;
 	bool acked;
 	void *data;
 	size_t data_len;
@@ -57,29 +59,101 @@ static void init_sk(struct sk *sk)
 }
 
 struct conn_info {
-	struct timeval rtt_sum;
+	struct timeval rtt_sum, *max_rtt;
 	unsigned int rtt_nb;
 	uint64_t data_len;
 };
 
-/* Accumulate info about segment
+/* Calculate rtt and accumulate info about segment
  *
  * data: a GQueue element of type struct segment *
  * user_data: has type struct conn_info *
  */
-static void seg_info(gpointer data, gpointer user_data)
+static void seg_info_gen(gpointer data, gpointer user_data)
 {
 	struct segment *seg = data;
 	struct conn_info *info = user_data;
 
 	if (seg->acked) {
-		struct timeval rtt;
-
-		timersub(&seg->ts_ack, &seg->ts_tx, &rtt);
-		timeradd(&info->rtt_sum, &rtt, &info->rtt_sum);
+		timersub(&seg->ts_ack, &seg->ts_tx, &seg->rtt);
+		timeradd(&info->rtt_sum, &seg->rtt, &info->rtt_sum);
 		info->rtt_nb++;
+
+		if (timercmp(&seg->rtt, info->max_rtt, >)) {
+			info->max_rtt = &seg->rtt;
+		}
 	}
 	info->data_len += seg->data_len;
+}
+
+/* Tree used to calculate rtt percentiles
+ * TYPE: rtt_val
+ * FIELD: linkage
+ * CMP: compare_rtt
+ * NAME: rtt_head
+ */
+struct rtt_val {
+	RB_ENTRY(rtt_val) linkage;
+	struct timeval *rtt;
+	unsigned int count;
+};
+
+static int compare_rtt(struct rtt_val *a, struct rtt_val *b)
+{
+	if (timercmp(a->rtt, b->rtt, ==)) {
+		return 0;
+	} else if (timercmp(a->rtt, b->rtt, <)) {
+		return -1;
+	} else {
+		return 1;
+	}
+}
+
+RB_HEAD(rtt_head, rtt_val);
+RB_PROTOTYPE(rtt_head, rtt_val, linkage, compare_rtt);
+RB_GENERATE(rtt_head, rtt_val, linkage, compare_rtt);
+
+struct rtt_info {
+	struct rtt_head *head;
+	unsigned int size;
+	unsigned int rrank;
+};
+
+/* Accumulate info about rtt for percentile calculation
+ *
+ * data: a GQueue element of type struct segment *
+ * seg->rtt must have been initialized by seg_info_gen already.
+ * user_data: has type struct rtt_info *
+ */
+static void seg_traverse_rtt(gpointer data, gpointer user_data)
+{
+	struct segment *seg = data;
+	struct rtt_info *info = user_data;
+	struct rtt_val *new, *current;
+
+	if (!seg->acked) {
+		return;
+	}
+
+	new = malloc(sizeof(*new));
+	new->count = 1;
+	new->rtt = &seg->rtt;
+	current = RB_INSERT(rtt_head, info->head, new);
+	if (current) {
+		current->count++;
+		free(new);
+	}
+	info->size++;
+	if (info->size > info->rrank) {
+		struct rtt_val *val = RB_MIN(rtt_head, info->head);
+
+		if (val->count == 1) {
+			RB_REMOVE(rtt_head, info->head, val);
+			free(val);
+		} else {
+			val->count--;
+		}
+	}
 }
 
 /* data: a GQueue element of type struct segment *
@@ -126,16 +200,18 @@ static void seg_free(gpointer data, gpointer user_data)
 
 static void sk_sndq_drain(struct sk *sk, bool do_sibling)
 {
-	struct conn_info info = {0};
+	struct conn_info cinfo = {
+		.max_rtt = &tv_zero,
+	};
 	unsigned long rtt_avg = 0;
 
-	g_queue_foreach(&sk->sndq, &seg_info, &info);
-	if (info.rtt_nb) {
-		rtt_avg = (info.rtt_sum.tv_sec * USEC_PER_SEC +
-			   info.rtt_sum.tv_usec) / info.rtt_nb;
+	g_queue_foreach(&sk->sndq, &seg_info_gen, &cinfo);
+	if (cinfo.rtt_nb) {
+		rtt_avg = (cinfo.rtt_sum.tv_sec * USEC_PER_SEC +
+			   cinfo.rtt_sum.tv_usec) / cinfo.rtt_nb;
 	}
 
-	if (rtt_avg || info.data_len) {
+	if (cinfo.rtt_nb || cinfo.data_len) {
 		struct {
 			struct in_addr *addr;
 			char addr_buf[INET_ADDRSTRLEN];
@@ -161,17 +237,38 @@ static void sk_sndq_drain(struct sk *sk, bool do_sibling)
 		       addrs[0].addr_buf, ntohs(sk->flow_id.src_port),
 		       addrs[1].addr_buf, ntohs(sk->flow_id.dst_port));
 	}
-	if (rtt_avg) {
+	if (cinfo.rtt_nb) {
 		ldiv_t rtt_usec = ldiv(rtt_avg, USEC_PER_SEC);
+		struct rtt_head head = RB_INITIALIZER(&head);
+		struct rtt_info rinfo = {
+			.head = &head,
+			.rrank = cinfo.rtt_nb -
+				DIV_ROUND_UP(95 * cinfo.rtt_nb, 100) + 1,
+		};
+		struct rtt_val *val, *nxt;
+		
+		/* traverse all segments while saving the largest rrank number
+		 * of rtt values
+		 */
+		g_queue_foreach(&sk->sndq, &seg_traverse_rtt, &rinfo);
+		val = RB_MIN(rtt_head, &head);
 
-		printf("    avgrtt %lu.%06lu (%u sample%s)\n",
-		       rtt_usec.quot, rtt_usec.rem, info.rtt_nb,
-		       info.rtt_nb > 1 ? "s" : "");
+		printf("    avgrtt %lu.%06lu 95th percentile %lu.%06lu max %lu.%06lu (%u sample%s)\n",
+		       rtt_usec.quot, rtt_usec.rem,
+		       val->rtt->tv_sec, val->rtt->tv_usec,
+		       cinfo.max_rtt->tv_sec, cinfo.max_rtt->tv_usec,
+		       cinfo.rtt_nb, cinfo.rtt_nb > 1 ? "s" : "");
+
+		for (; val != NULL; val = nxt) {
+			nxt = RB_NEXT(rtt_head, &head, val);
+			RB_REMOVE(rtt_head, &head, val);
+			free(val);
+		}
 	}
-	if (info.data_len) {
+	if (cinfo.data_len) {
 		uint32_t offset = 0;
 
-		printf("    captured payload data, len %lu\n", info.data_len);
+		printf("    captured payload data, len %lu\n", cinfo.data_len);
 		g_queue_foreach(&sk->sndq, &seg_print, &offset);
 	}
 
