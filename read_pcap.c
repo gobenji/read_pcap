@@ -41,6 +41,30 @@ static void parse_packet(u_char *_context, const struct pcap_pkthdr *h,
 	}
 }
 
+/* result must be preallocated to a buffer of size >= 5 */
+static void format_percent(long num, long denom, char *result)
+{
+	ldiv_t retval;
+
+	if (denom == 0) {
+		strcpy(result, "NA");
+		return;
+	}
+	if (num > denom) {
+		strcpy(result, ">100");
+		return;
+	}
+
+	retval = ldiv(num * 100, denom);
+	if (retval.quot < 0) {
+		strcpy(result, "<0");
+	} else if (retval.quot == 0 && retval.rem > 0) {
+		strcpy(result, "<1");
+	} else {
+		snprintf(result, 5, "%ld", retval.quot);
+	}
+}
+
 /*
  * node: struct stats *, stats for this node
  * data: struct stats *, top level stats
@@ -51,19 +75,14 @@ static gboolean print_stats(GNode *node, gpointer data)
 	struct stats *global = (struct stats *)data;
 	unsigned int level = g_node_depth(node) - 1;
 	const unsigned int indent = 4;
-	unsigned int packets_p, bytes_p;
+	char packets_p[5], bytes_p[5];
 
-#define percent(local, global)                                                 \
-({                                                                             \
-	typeof(local) __tmp = local;                                           \
-	__tmp > 0 ? __tmp * 100 / (global) : 0;                                \
-})
-	packets_p = percent(stats->packets, global->packets);
-	bytes_p = percent(stats->bytes, global->bytes);
-#undef percent
+	format_percent(stats->packets, global->packets, packets_p);
+	format_percent(stats->bytes, global->bytes, bytes_p);
 
 	/* level is in [0..4]: total, link, net, transport, application */
-	printf("%*s%-16s%*s  %8" PRIu64 "  (%3u%%)  %8" PRIu64 "  (%3u%%)\n",
+	assert(level <= 4);
+	printf("%*s%-16s%*s  %10" PRIu64 "  (%3s%%)  %10" PRIu64 "  (%3s%%)\n",
 	       level * indent, "", stats->name, (4 - level) * indent, "",
 	       stats->packets, packets_p, stats->bytes, bytes_p);
 
