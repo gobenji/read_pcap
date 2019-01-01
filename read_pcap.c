@@ -74,7 +74,7 @@ static gboolean print_stats(GNode *node, gpointer data)
 	struct stats *stats = (struct stats *)node->data;
 	struct stats *global = (struct stats *)data;
 	unsigned int level = g_node_depth(node) - 1;
-	const unsigned int indent = 4;
+	const unsigned int indent = 3;
 	char packets_p[5], bytes_p[5];
 
 	format_percent(stats->packets, global->packets, packets_p);
@@ -82,7 +82,7 @@ static gboolean print_stats(GNode *node, gpointer data)
 
 	/* level is in [0..4]: total, link, net, transport, application */
 	assert(level <= 4);
-	printf("%*s%-16s%*s  %10" PRIu64 "  (%3s%%)  %10" PRIu64 "  (%3s%%)\n",
+	printf("%*s%-19s%*s  %10" PRIu64 "  (%3s%%)  %12" PRIu64 "  (%3s%%)\n",
 	       level * indent, "", stats->name, (4 - level) * indent, "",
 	       stats->packets, packets_p, stats->bytes, bytes_p);
 
@@ -110,7 +110,7 @@ int main(int argc, char **argv)
 {
 	struct context context = {
 		.stats = {
-			.name = "Total",
+			.name = "Total (on the wire)",
 		},
 	};
 	char errbuf[PCAP_ERRBUF_SIZE];

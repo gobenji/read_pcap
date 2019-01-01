@@ -81,7 +81,7 @@ struct proto *register_ether_proto(GNode *parent)
 	struct proto *proto = malloc(sizeof(*proto));
 	struct ptype *ptype = known_types;
 
-	stats->name = "Ethernet";
+	stats->name = "Ethernet (captured)";
 	proto->ops = &ether_ops;
 	proto->node = g_node_new(stats);
 
