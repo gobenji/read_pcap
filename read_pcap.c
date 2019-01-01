@@ -1,6 +1,7 @@
+#include <getopt.h>
+#include <inttypes.h>
 #include <stdio.h>
 #include <unistd.h>
-#include <getopt.h>
 
 #include "read_pcap.h"
 #include "link.h"

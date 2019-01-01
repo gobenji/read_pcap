@@ -5,6 +5,7 @@
 #include <gmodule.h>
 #include <pcap/pcap.h>
 #include <stdbool.h>
+#include <stdint.h>
 
 
 extern bool verbose;
