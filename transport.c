@@ -53,8 +53,6 @@ struct sk {
 
 static void init_sk(struct sk *sk)
 {
-	sk->snd_nxt = 0;
-	sk->snd_una = 0;
 	g_queue_init(&sk->acked_q);
 	g_queue_init(&sk->unacked_q);
 }
@@ -374,7 +372,7 @@ static void tcp_update(struct tcpv4_priv *priv, struct pc_buff *pcb)
 		.src_port = tcph->source,
 	};
 	struct sk *dst_sk, *src_sk;
-	uint32_t seq, next_seq, data_len;
+	uint32_t next_seq, data_len, seq = ntohl(tcph->seq);
 
 	if (verbose) {
 		char addr_buf[INET_ADDRSTRLEN];
@@ -398,27 +396,28 @@ static void tcp_update(struct tcpv4_priv *priv, struct pc_buff *pcb)
 
 	src_sk = g_hash_table_lookup(priv->sockets, &fl);
 	if (!src_sk) {
+		struct flow_id reverse_fl = {
+			.dst_addr.s_addr = iph->saddr,
+			.src_addr.s_addr = iph->daddr,
+			.dst_port = tcph->source,
+			.src_port = tcph->dest,
+		};
+
 		src_sk = malloc(sizeof(*src_sk));
-		dst_sk = malloc(sizeof(*dst_sk));
 
 		init_sk(src_sk);
 		src_sk->flow_id = fl;
-		src_sk->sibling = dst_sk;
-
-		init_sk(dst_sk);
-		dst_sk->flow_id.dst_addr.s_addr = fl.src_addr.s_addr;
-		dst_sk->flow_id.src_addr.s_addr = fl.dst_addr.s_addr;
-		dst_sk->flow_id.dst_port = fl.src_port;
-		dst_sk->flow_id.src_port = fl.dst_port;
-		dst_sk->sibling = src_sk;
+		src_sk->sibling = g_hash_table_lookup(priv->sockets,
+						      &reverse_fl);
+		if (src_sk->sibling) {
+			src_sk->sibling->sibling = src_sk;
+		}
+		src_sk->snd_una = src_sk->snd_nxt = seq;
 
 		g_hash_table_insert(priv->sockets, &src_sk->flow_id, src_sk);
-		g_hash_table_insert(priv->sockets, &dst_sk->flow_id, dst_sk);
-	} else {
-		dst_sk = src_sk->sibling;
 	}
+	dst_sk = src_sk->sibling;
 
-	seq = ntohl(tcph->seq);
 	if (tcph->syn) {
 		src_sk->snd_una = src_sk->snd_nxt = seq;
 		sk_sndq_drain(src_sk, false);
@@ -446,7 +445,7 @@ static void tcp_update(struct tcpv4_priv *priv, struct pc_buff *pcb)
 		g_queue_push_tail(&src_sk->unacked_q, seg);
 	}
 
-	if (tcph->ack) {
+	if (tcph->ack && dst_sk) {
 		uint32_t ack_seq = ntohl(tcph->ack_seq);
 
 		if (after(ack_seq, dst_sk->snd_una)) {
