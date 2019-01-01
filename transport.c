@@ -413,26 +413,26 @@ static void tcp_update(struct tcpv4_priv *priv, struct pc_buff *pcb)
 		       tcph->psh ? "P" : "");
 	}
 
-	dst_sk = g_hash_table_lookup(priv->sockets, &fl);
-	if (!dst_sk) {
-		dst_sk = malloc(sizeof(*dst_sk));
+	src_sk = g_hash_table_lookup(priv->sockets, &fl);
+	if (!src_sk) {
 		src_sk = malloc(sizeof(*src_sk));
-
-		init_sk(dst_sk);
-		dst_sk->flow_id = fl;
-		dst_sk->sibling = src_sk;
+		dst_sk = malloc(sizeof(*dst_sk));
 
 		init_sk(src_sk);
-		src_sk->flow_id.dst_addr.s_addr = fl.src_addr.s_addr;
-		src_sk->flow_id.src_addr.s_addr = fl.dst_addr.s_addr;
-		src_sk->flow_id.dst_port = fl.src_port;
-		src_sk->flow_id.src_port = fl.dst_port;
+		src_sk->flow_id = fl;
 		src_sk->sibling = dst_sk;
 
-		g_hash_table_insert(priv->sockets, &dst_sk->flow_id, dst_sk);
+		init_sk(dst_sk);
+		dst_sk->flow_id.dst_addr.s_addr = fl.src_addr.s_addr;
+		dst_sk->flow_id.src_addr.s_addr = fl.dst_addr.s_addr;
+		dst_sk->flow_id.dst_port = fl.src_port;
+		dst_sk->flow_id.src_port = fl.dst_port;
+		dst_sk->sibling = src_sk;
+
 		g_hash_table_insert(priv->sockets, &src_sk->flow_id, src_sk);
+		g_hash_table_insert(priv->sockets, &dst_sk->flow_id, dst_sk);
 	} else {
-		src_sk = dst_sk->sibling;
+		dst_sk = src_sk->sibling;
 	}
 
 	seq = ntohl(tcph->seq);
