@@ -30,8 +30,8 @@ static inline bool between(uint32_t seq1, uint32_t seq2, uint32_t seq3)
 
 struct segment {
 	uint32_t seq, len;
-	struct timeval ts_tx, ts_ack, rtt;
-	bool acked;
+	/* in the unacked queue, ts is tx_ts; in the acked queue, ts is rtt */
+	struct timeval ts;
 	void *data;
 	size_t data_len;
 };
@@ -46,7 +46,7 @@ struct sk {
 
 	uint32_t snd_una, snd_nxt;
 	/* each element is a struct segment * */
-	GQueue sndq;
+	GQueue acked_q, unacked_q;
 
 	struct sk *sibling;
 };
@@ -55,34 +55,24 @@ static void init_sk(struct sk *sk)
 {
 	sk->snd_nxt = 0;
 	sk->snd_una = 0;
-	g_queue_init(&sk->sndq);
+	g_queue_init(&sk->acked_q);
+	g_queue_init(&sk->unacked_q);
 }
 
 struct conn_info {
-	struct timeval rtt_sum, *max_rtt;
-	unsigned int rtt_nb;
 	uint64_t data_len;
 };
 
-/* Calculate rtt and accumulate info about segment
+/* Accumulate info about segment
  *
  * data: a GQueue element of type struct segment *
  * user_data: has type struct conn_info *
  */
-static void seg_info_gen(gpointer data, gpointer user_data)
+static void seg_traverse_all(gpointer data, gpointer user_data)
 {
 	struct segment *seg = data;
 	struct conn_info *info = user_data;
 
-	if (seg->acked) {
-		timersub(&seg->ts_ack, &seg->ts_tx, &seg->rtt);
-		timeradd(&info->rtt_sum, &seg->rtt, &info->rtt_sum);
-		info->rtt_nb++;
-
-		if (timercmp(&seg->rtt, info->max_rtt, >)) {
-			info->max_rtt = &seg->rtt;
-		}
-	}
 	info->data_len += seg->data_len;
 }
 
@@ -114,30 +104,35 @@ RB_PROTOTYPE(rtt_head, rtt_val, linkage, compare_rtt);
 RB_GENERATE(rtt_head, rtt_val, linkage, compare_rtt);
 
 struct rtt_info {
+	struct timeval rtt_sum, *max_rtt;
+
 	struct rtt_head *head;
 	unsigned int size;
+
 	unsigned int rrank;
 };
 
 /* Accumulate info about rtt for percentile calculation
  *
  * data: a GQueue element of type struct segment *
- * seg->rtt must have been initialized by seg_info_gen already.
+ * This queue must contain acked segments only.
  * user_data: has type struct rtt_info *
  */
-static void seg_traverse_rtt(gpointer data, gpointer user_data)
+static void seg_traverse_acked(gpointer data, gpointer user_data)
 {
 	struct segment *seg = data;
 	struct rtt_info *info = user_data;
 	struct rtt_val *new, *current;
 
-	if (!seg->acked) {
-		return;
+	timeradd(&info->rtt_sum, &seg->ts, &info->rtt_sum);
+
+	if (timercmp(&seg->ts, info->max_rtt, >)) {
+		info->max_rtt = &seg->ts;
 	}
 
 	new = malloc(sizeof(*new));
 	new->count = 1;
-	new->rtt = &seg->rtt;
+	new->rtt = &seg->ts;
 	current = RB_INSERT(rtt_head, info->head, new);
 	if (current) {
 		current->count++;
@@ -200,18 +195,16 @@ static void seg_free(gpointer data, gpointer user_data)
 
 static void sk_sndq_drain(struct sk *sk, bool do_sibling)
 {
-	struct conn_info cinfo = {
-		.max_rtt = &tv_zero,
-	};
-	unsigned long rtt_avg = 0;
+	unsigned int rtt_nb = g_queue_get_length(&sk->acked_q);
+	struct conn_info cinfo = {0};
 
-	g_queue_foreach(&sk->sndq, &seg_info_gen, &cinfo);
-	if (cinfo.rtt_nb) {
-		rtt_avg = (cinfo.rtt_sum.tv_sec * USEC_PER_SEC +
-			   cinfo.rtt_sum.tv_usec) / cinfo.rtt_nb;
-	}
+	/* there is no interface to join two queues, which makes for some
+	 * repetition...
+	 */
+	g_queue_foreach(&sk->acked_q, &seg_traverse_all, &cinfo);
+	g_queue_foreach(&sk->unacked_q, &seg_traverse_all, &cinfo);
 
-	if (cinfo.rtt_nb || cinfo.data_len) {
+	if (rtt_nb || cinfo.data_len) {
 		struct {
 			struct in_addr *addr;
 			char addr_buf[INET_ADDRSTRLEN];
@@ -237,27 +230,32 @@ static void sk_sndq_drain(struct sk *sk, bool do_sibling)
 		       addrs[0].addr_buf, ntohs(sk->flow_id.src_port),
 		       addrs[1].addr_buf, ntohs(sk->flow_id.dst_port));
 	}
-	if (cinfo.rtt_nb) {
-		ldiv_t rtt_usec = ldiv(rtt_avg, USEC_PER_SEC);
+	if (rtt_nb) {
 		struct rtt_head head = RB_INITIALIZER(&head);
 		struct rtt_info rinfo = {
 			.head = &head,
-			.rrank = cinfo.rtt_nb -
-				DIV_ROUND_UP(95 * cinfo.rtt_nb, 100) + 1,
+			.rrank = rtt_nb - DIV_ROUND_UP(95 * rtt_nb, 100) + 1,
+			.max_rtt = &tv_zero,
 		};
 		struct rtt_val *val, *nxt;
-		
-		/* traverse all segments while saving the largest rrank number
-		 * of rtt values
+		unsigned long rtt_avg;
+		ldiv_t rtt_usec;
+
+		/* traverse acked segments while saving the largest rrank
+		 * number of rtt values
 		 */
-		g_queue_foreach(&sk->sndq, &seg_traverse_rtt, &rinfo);
+		g_queue_foreach(&sk->acked_q, &seg_traverse_acked, &rinfo);
+
+		rtt_avg = (rinfo.rtt_sum.tv_sec * USEC_PER_SEC +
+			   rinfo.rtt_sum.tv_usec) / rtt_nb;
+		rtt_usec = ldiv(rtt_avg, USEC_PER_SEC);
 		val = RB_MIN(rtt_head, &head);
 
 		printf("    avgrtt %lu.%06lu 95th percentile %lu.%06lu max %lu.%06lu (%u sample%s)\n",
 		       rtt_usec.quot, rtt_usec.rem,
 		       val->rtt->tv_sec, val->rtt->tv_usec,
-		       cinfo.max_rtt->tv_sec, cinfo.max_rtt->tv_usec,
-		       cinfo.rtt_nb, cinfo.rtt_nb > 1 ? "s" : "");
+		       rinfo.max_rtt->tv_sec, rinfo.max_rtt->tv_usec,
+		       rtt_nb, rtt_nb > 1 ? "s" : "");
 
 		for (; val != NULL; val = nxt) {
 			nxt = RB_NEXT(rtt_head, &head, val);
@@ -269,15 +267,17 @@ static void sk_sndq_drain(struct sk *sk, bool do_sibling)
 		uint32_t offset = 0;
 
 		printf("    captured payload data, len %lu\n", cinfo.data_len);
-		g_queue_foreach(&sk->sndq, &seg_print, &offset);
+		g_queue_foreach(&sk->acked_q, &seg_print, &offset);
+		g_queue_foreach(&sk->unacked_q, &seg_print, &offset);
 	}
 
-	g_queue_foreach(&sk->sndq, &seg_free, NULL);
-	g_queue_clear(&sk->sndq);
+	g_queue_foreach(&sk->acked_q, &seg_free, NULL);
+	g_queue_foreach(&sk->unacked_q, &seg_free, NULL);
+	g_queue_clear(&sk->acked_q);
+	g_queue_clear(&sk->unacked_q);
 
 	/* For a nicer output, drain the sibling right after */
-	if (do_sibling && sk->sibling &&
-	    !g_queue_is_empty(&sk->sibling->sndq)) {
+	if (do_sibling && sk->sibling) {
 		sk_sndq_drain(sk->sibling, false);
 	}
 }
@@ -309,41 +309,24 @@ static void destroy_sk(gpointer data)
 }
 
 /* Mark segments with seq# in the [from, to[ interval as acked at time tstamp
- *
- * q: GQueue whose elements are struct segment *
  */
-static void sk_q_record_ack(GQueue *q, uint32_t from, uint32_t to,
+static void sk_q_record_ack(struct sk *sk, uint32_t from, uint32_t to,
 			    const struct timeval *tstamp)
 {
-	GList *e;
-	bool found = false;
-	uint32_t nxt;
+	GList *e, *next;
 
-	e = g_queue_peek_tail_link(q);
-	if (e) {
-		struct segment *seg = e->data;
-
-		nxt = seg->seq + seg->len;
-	}
-	while (e) {
+	for (e = g_queue_peek_head_link(&sk->unacked_q); e; e = next) {
 		struct segment *seg = e->data;
 		/* first seq# beyond the end of the segment */
 		uint32_t end_seq = seg->seq + seg->len;
 
-		/* do not wrap around */
-		if (nxt != end_seq && !before(end_seq, nxt)) {
-			break;
-		}
+		next = e->next;
 
 		if (between(seg->seq, from, to) && between(end_seq, from, to)) {
-			seg->acked = true;
-			memcpy(&seg->ts_ack, tstamp, sizeof(seg->ts_ack));
-			found = true;
-		} else if (found) {
-			/* we've gone beyond the [from, to[ interval */
-			break;
+			timersub(tstamp, &seg->ts, &seg->ts);
+			g_queue_unlink(&sk->unacked_q, e);
+			g_queue_push_tail_link(&sk->acked_q, e);
 		}
-		e = e->prev;
 	}
 }
 
@@ -450,8 +433,7 @@ static void tcp_update(struct tcpv4_priv *priv, struct pc_buff *pcb)
 
 		seg->seq = seq;
 		seg->len = next_seq - seq;
-		memcpy(&seg->ts_tx, pcb->tstamp, sizeof(seg->ts_tx));
-		seg->acked = false;
+		memcpy(&seg->ts, pcb->tstamp, sizeof(seg->ts));
 		if (pcb->len) {
 			data_len = MIN(data_len, pcb->len);
 			seg->data = malloc(data_len);
@@ -461,15 +443,15 @@ static void tcp_update(struct tcpv4_priv *priv, struct pc_buff *pcb)
 			seg->data = NULL;
 			seg->data_len = 0;
 		}
-		g_queue_push_tail(&src_sk->sndq, seg);
+		g_queue_push_tail(&src_sk->unacked_q, seg);
 	}
 
 	if (tcph->ack) {
 		uint32_t ack_seq = ntohl(tcph->ack_seq);
 
 		if (after(ack_seq, dst_sk->snd_una)) {
-			sk_q_record_ack(&dst_sk->sndq, dst_sk->snd_una,
-					ack_seq, pcb->tstamp);
+			sk_q_record_ack(dst_sk, dst_sk->snd_una, ack_seq,
+					pcb->tstamp);
 			dst_sk->snd_una = ack_seq;
 		}
 	}
